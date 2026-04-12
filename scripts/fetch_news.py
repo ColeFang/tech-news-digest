@@ -279,10 +279,8 @@ def render_template(context):
     lines = []
     lines.append(f"# 技术快讯 | {context['date']}")
     lines.append("")
-    lines.append("> 每天自动生成 | 更新周期: 每日 08:00 (UTC+8)")
+    lines.append("> 每天自动生成 | 更新周期: 每日 10:00 (UTC+8)")
     lines.append("> 数据来源: OpenAlex · GitHub Trending · StackOverflow")
-    if context.get("has_judgments"):
-        lines.append("> 每篇含个人判断思考")
     lines.append("")
     lines.append("---")
     lines.append("")
