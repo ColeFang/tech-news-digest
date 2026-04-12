@@ -14,6 +14,10 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# ─── 新增模块 ───────────────────────────────────────────────
+from summarize import gen_daily_summary, format_summary_markdown
+from rank import rank_content
+
 # ─── 配置 ───────────────────────────────────────────────
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -273,7 +277,6 @@ def fetch_stackoverflow(tags=None, limit=5):
         })
     return questions
 
-
 # ─── 渲染 Markdown ───────────────────────────────────────
 def render_template(context):
     lines = []
@@ -284,6 +287,11 @@ def render_template(context):
     lines.append("")
     lines.append("---")
     lines.append("")
+    # ── A1: 每日摘要（如果有）──
+    daily_summary = context.get("daily_summary", "")
+    if daily_summary:
+        lines.append(daily_summary)
+        lines.append("")
 
     # ── AI 资讯 ──
     lines.append("## 🤖 AI 资讯")
@@ -348,10 +356,12 @@ def render_template(context):
 
 
 # ─── 主流程 ───────────────────────────────────────────────
-def main(date_str=None, use_llm=True):
+def main(date_str=None, use_llm=True, use_ranking=True, deliver_channels=None):
     """
     date_str: YYYY-MM-DD 格式，None 表示今天
     use_llm: 是否调用 LLM 生成判断
+    use_ranking: 是否启用个性化排序（基于 preferences.yaml）
+    deliver_channels: 分发渠道列表，None 则跳过分发
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     dt = make_date(date_str)
@@ -360,13 +370,20 @@ def main(date_str=None, use_llm=True):
 
     print(f"📡 正在采集数据...（日期: {date_label}）")
     print("  🤖 OpenAlex AI 论文...")
-    ai_news = fetch_openalex_news(dt=dt, limit=5)
+    ai_news = fetch_openalex_news(dt=dt, limit=8)
 
     print("  🔥 GitHub 高星活跃项目...")
-    github_trending = fetch_github_trending(dt=dt, limit=8)
+    github_trending = fetch_github_trending(dt=dt, limit=12)
 
     print("  💬 StackOverflow 热点...")
-    stackoverflow = fetch_stackoverflow(tags=["python", "javascript", "machine-learning"], limit=5)
+    stackoverflow = fetch_stackoverflow(tags=["python", "javascript", "machine-learning"], limit=8)
+
+    # ── B1/B2: 个性化排序 ──────────────────────────────────
+    if use_ranking:
+        print("  🎯 个性化排序中（读取 preferences.yaml）...")
+        ai_news, github_trending, stackoverflow = rank_content(
+            ai_news, github_trending, stackoverflow
+        )
 
     # LLM 判断
     has_judgments = False
@@ -382,12 +399,23 @@ def main(date_str=None, use_llm=True):
         elif not OPENAI_API_KEY:
             print("  ⏭️ 跳过 LLM 判断（未配置 OPENAI_API_KEY）")
 
+    # ── A1: 每日摘要 ───────────────────────────────────────
+    daily_summary = ""
+    if use_llm and OPENAI_API_KEY:
+        print("  📝 正在生成每日摘要...")
+        raw_summary = gen_daily_summary(ai_news, github_trending, stackoverflow)
+        daily_summary = format_summary_markdown(raw_summary)
+        print(f"    摘要: {raw_summary[:50]}...")
+    else:
+        print("  ⏭️ 跳过每日摘要（use_llm=False 或未配置 OPENAI_API_KEY）")
+
     context = {
         "date": date_label,
         "ai_news": ai_news,
         "github_trending": github_trending,
         "stackoverflow": stackoverflow,
         "has_judgments": has_judgments,
+        "daily_summary": daily_summary,
     }
 
     print("  📝 渲染 Markdown...")
@@ -397,15 +425,34 @@ def main(date_str=None, use_llm=True):
     with open(out_file, "w", encoding="utf-8") as f:
         f.write(md_content)
 
+    # ── B3: 多渠道分发 ────────────────────────────────────
+    if deliver_channels:
+        print(f"  📬 开始分发到: {', '.join(deliver_channels)} ...")
+        from deliver import deliver
+        results = deliver(md_content, deliver_channels)
+        for ch, ok in results.items():
+            print(f"     {ch}: {'✅' if ok else '❌'}")
+
     print(f"\n✅ 生成完成: {out_file}")
     print(f"   - AI 资讯: {len(ai_news)} 条")
     print(f"   - GitHub: {len(github_trending)} 条")
     print(f"   - StackOverflow: {len(stackoverflow)} 条")
     print(f"   - LLM 判断: {'✅' if has_judgments else '❌'}")
+    print(f"   - 每日摘要: {'✅' if daily_summary else '❌'}")
     return str(out_file)
 
 
 if __name__ == "__main__":
     date_arg = sys.argv[1] if len(sys.argv) > 1 else None
     use_llm = "--no-llm" not in sys.argv
-    main(date_str=date_arg, use_llm=use_llm)
+    use_ranking = "--no-ranking" not in sys.argv
+
+    # 解析 --deliver 参数
+    deliver_channels = None
+    deliver_arg = None
+    for arg in sys.argv:
+        if arg.startswith("--deliver="):
+            deliver_arg = arg.split("=", 1)[1]
+            deliver_channels = [ch.strip() for ch in deliver_arg.split(",") if ch.strip()]
+
+    main(date_str=date_arg, use_llm=use_llm, use_ranking=use_ranking, deliver_channels=deliver_channels)
