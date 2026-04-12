@@ -106,7 +106,7 @@ tech-news-digest/
 │       └── YYYY-WXX.md
 ├── templates/
 │   ├── daily_template.md      # 原始模板（保留）
-│   └── daily_ai_template.md   # AI 增强模板（含摘要+趋势位）
+│   └── daily_ai_template.md   # AI 增强模板（含摘要+趋势位+AI判断）
 ├── preferences.yaml.example  # 配置示例
 ├── README.md
 └── EVOLUTION.md               # 本文档
@@ -141,9 +141,20 @@ tech-news-digest/
 
 ## 实施顺序
 
-1. ✅ **A1 每日摘要** — 最快落地，直接提升快讯可读性
-2. ⬜ **B1 兴趣配置** — 配置化，支持用户定制
-3. ⬜ **B2 精选推荐** — 基于 B1 的过滤和排序
-4. ⬜ **A2 趋势分析** — 读取 daily 历史数据，生成趋势报告
-5. ⬜ **B3 多渠道分发** — Telegram Bot / Email / WeChat
-6. ⬜ **GitHub Actions 更新** — 新 workflow 适配新脚本
+1. ✅ **A1 每日摘要** — `scripts/summarize.py`，JSON-mode + max_tokens=800
+2. ✅ **B1 兴趣配置** — `preferences.yaml` + `scripts/rank.py`
+3. ✅ **B2 精选推荐** — `rank.py` 的 `match_score()` + `rank_content()`
+4. ✅ **A2 趋势分析** — `scripts/analyze_trends.py` + `--trends` 标志，输出 `daily/trends-YYYY-MM-DD.md`
+5. ✅ **B3 多渠道分发** — `scripts/deliver.py` 支持 Telegram / Email / WeChat / 飞书（Lark）
+6. ✅ **GitHub Actions** — `.github/workflows/daily-digest.yml` 支持 `--trends` + `--deliver` 参数
+
+## 渠道配置
+
+| 渠道 | 配置项 | 说明 |
+|------|--------|------|
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | 向 @BotFather 创建 Bot |
+| Email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_TO` | 支持 Gmail / 任意 SMTP |
+| WeChat | `WEIXIN_ILINK_HOOK` | 微信 ilink 协议 |
+| 飞书 Lark | `LARK_WEBHOOK_URL` | 群设置 → 添加机器人 → 自定义机器人 → Webhook |
+
+所有配置项均可通过环境变量或 `preferences.yaml` 设置（环境变量优先）。

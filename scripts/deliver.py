@@ -153,6 +153,7 @@ def md_to_html(md_text: str) -> str:
 # 复用 research-thinking-ai 中已有的 WeChat ilink 基础设施
 # 通过环境变量 WEIXIN_ILINK_HOOK 指定发送端点
 WEIXIN_ILINK_HOOK = os.getenv("WEIXIN_ILINK_HOOK", PREF.get("delivery", {}).get("wechat_ilink_hook", ""))
+LARK_WEBHOOK_URL = os.getenv("LARK_WEBHOOK_URL", PREF.get("delivery", {}).get("lark_webhook_url", ""))
 
 
 def send_wechat(text: str) -> bool:
@@ -175,6 +176,35 @@ def send_wechat(text: str) -> bool:
         return False
 
 
+def send_lark(text: str) -> bool:
+    """通过飞书 Bot Webhook 发送消息（支持富文本卡片）"""
+    if not LARK_WEBHOOK_URL:
+        print("  ⏭️ 飞书未配置（LARK_WEBHOOK_URL 未设置）")
+        return False
+
+    try:
+        payload = {
+            "msg_type": "text",
+            "content": {"text": text}
+        }
+        resp = requests.post(
+            LARK_WEBHOOK_URL,
+            json=payload,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("code") == 0 or result.get("StatusCode") == 0:
+            print(f"  ✅ 飞书发送成功")
+            return True
+        else:
+            print(f"  ❌ 飞书发送失败: {result}")
+            return False
+    except Exception as e:
+        print(f"  ❌ 飞书发送失败: {e}")
+        return False
+
+
 # ─── 主分发入口 ──────────────────────────────────────────────
 def deliver(content: str, channels: Optional[List[str]] = None) -> dict:
     """
@@ -183,7 +213,7 @@ def deliver(content: str, channels: Optional[List[str]] = None) -> dict:
     返回各渠道发送结果
     """
     if channels is None:
-        channels = ["telegram", "email", "wechat"]
+        channels = ["telegram", "email", "wechat", "lark"]
 
     results = {}
 
@@ -209,5 +239,14 @@ def deliver(content: str, channels: Optional[List[str]] = None) -> dict:
         else:
             wc_text = content[:500] + "\n\n完整版: github.com/ColeFang/tech-news-digest"
         results["wechat"] = send_wechat(wc_text)
+
+    if "lark" in channels:
+        # 飞书消息精简，只发摘要
+        summary_match = re.search(r'> \*\*今日要点\*\* (.+?)。?\n', content)
+        if summary_match:
+            lk_text = f"📡 技术快讯\n\n{summary_match.group(1)}。\n\n完整版: github.com/ColeFang/tech-news-digest"
+        else:
+            lk_text = content[:500] + "\n\n完整版: github.com/ColeFang/tech-news-digest"
+        results["lark"] = send_lark(lk_text)
 
     return results

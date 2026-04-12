@@ -26,6 +26,7 @@ delivery:
     # - wechat    # 微信（使用 WeChat ilink 协议）
     - telegram  # Telegram Bot
     # - email     # 邮件（需配置 SMTP）
+    # - lark      # 飞书 Bot（需配置 lark_webhook_url）
 
   # Telegram 配置
   telegram_bot_token: "${TELEGRAM_BOT_TOKEN}"
@@ -37,6 +38,10 @@ delivery:
   smtp_user: "${SMTP_USER}"
   smtp_pass: "${SMTP_PASS}"
   email_to: []
+
+  # 飞书（ Lark ）Bot 配置
+  # 在飞书群设置中添加"自定义机器人"，复制 Webhook URL
+  lark_webhook_url: "${LARK_WEBHOOK_URL}"
 
 # 采集设置
 fetch:
