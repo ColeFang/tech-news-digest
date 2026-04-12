@@ -443,8 +443,21 @@ if __name__ == "__main__":
 
     # 解析 --deliver 参数
     deliver_channels = None
+    trends_output = None
     for arg in sys.argv:
         if arg.startswith("--deliver="):
             deliver_channels = [ch.strip() for ch in arg.split("=", 1)[1].split(",") if ch.strip()]
+        if arg.startswith("--trends"):
+            # 解析 --trends=7 或 --trends
+            n_str = arg.split("=", 1)[1] if "=" in arg else "7"
+            trends_output = n_str if n_str else "7"
 
     main(date_str=date_arg, use_llm=use_llm, use_ranking=use_ranking, deliver_channels=deliver_channels)
+
+    # ── A2: 趋势分析 ────────────────────────────────────────
+    if trends_output:
+        from analyze_trends import gen_weekly_trends
+        n = int(trends_output) if trends_output.isdigit() else 7
+        output_path = f"daily/trends-{datetime.now().strftime('%Y-%m-%d')}.md"
+        md = gen_weekly_trends(n=n, output_path=output_path)
+        print(f"\n📊 趋势分析已生成: {output_path}")
