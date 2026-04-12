@@ -33,18 +33,17 @@ def slug_date():
 
 
 # ─── 1. OpenAlex AI 论文 ─────────────────────────────────
-def fetch_openalex_news(topic="artificial intelligence", limit=5):
+def fetch_openalex_news(limit=5):
     """
-    通过 OpenAlex API 搜索 AI 相关最新论文
+    通过 OpenAlex API 搜索 AI/ML 高影响力论文
     """
-    today = datetime.now()
-    week_ago = today - timedelta(days=7)
-    date_filter = f"from_publication_date:{week_ago.strftime('%Y-%m-%d')}"
-
+    # 用 filter + sort（避免 search 与 cited_by_count 冲突）
+    # filter 格式: OR 用 | 分隔
     url = (
         "https://api.openalex.org/works"
-        f"?filter=topic:({topic}),{date_filter}"
-        f"&sort=cited_by_count:desc"
+        "?search=artificial intelligence,machine learning,large language model"
+        "&filter=publication_year:2025|2026"
+        "&sort=relevance_score:desc"
         f"&per_page={limit}"
     )
     try:
@@ -91,18 +90,21 @@ def fetch_openalex_news(topic="artificial intelligence", limit=5):
 # ─── 2. GitHub Trending ───────────────────────────────────
 def fetch_github_trending(language="", limit=10):
     """
-    获取 GitHub Trending 列表
+    获取 GitHub 高星活跃项目（模拟 Trending 效果）
+    使用 stars:>500 + pushed:>7days ago 过滤
     """
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    query = f"stars:>500 pushed:>{week_ago}"
+    if language:
+        query += f" language:{language}"
+
     url = "https://api.github.com/search/repositories"
     params = {
-        "q": f"created:>{datetime.now().strftime('%Y-%m-%d')}",
+        "q": query,
         "sort": "stars",
         "order": "desc",
         "per_page": limit,
     }
-    if language:
-        params["q"] += f" language:{language}"
-
     try:
         resp = requests.get(url, params=params, headers=_hdrs(), timeout=15)
         resp.raise_for_status()
@@ -122,7 +124,7 @@ def fetch_github_trending(language="", limit=10):
             "language": repo.get("language") or "—",
             "stars": f"{repo.get('stargazers_count', 0):,}",
             "forks": f"{repo.get('forks_count', 0):,}",
-            "today_stars": "⭐+?",  # GitHub API 不直接提供当日增量，改用 Stars 排名
+            "today_stars": "⭐+?",
         })
     return repos
 
@@ -164,58 +166,70 @@ def fetch_stackoverflow(tags=None, limit=5):
 
 
 # ─── 渲染 Markdown ───────────────────────────────────────
-def render_template(tpl_path, context):
-    with open(tpl_path, "r", encoding="utf-8") as f:
-        tpl = f.read()
+def render_template(context):
+    lines = []
+    lines.append(f"# 技术快讯 | {context['date']}")
+    lines.append("")
+    lines.append("> 每天自动生成 | 更新周期: 每日 08:00 (UTC+8)")
+    lines.append("> 数据来源: OpenAlex · GitHub Trending · StackOverflow")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
 
-    # 简单模板替换（无外部依赖）
-    tpl = tpl.replace("{{date}}", context["date"])
+    # ── AI 资讯 ──
+    lines.append("## 🤖 AI 资讯")
+    lines.append("")
+    if context["ai_news"]:
+        for n in context["ai_news"]:
+            lines.append(f"### {n['title']}")
+            lines.append(f"- **来源**: OpenAlex")
+            lines.append(f"- **论文**: [{n['title']}]({n['url']})")
+            lines.append(f"- **发表**: {n['published']}")
+            lines.append(f"- **摘要**: {n['abstract']}")
+            lines.append("")
+    else:
+        lines.append("*今日暂无 AI 相关论文*")
+        lines.append("")
+    lines.append("---")
+    lines.append("")
 
-    # AI News
-    ai_block = ""
-    for n in context["ai_news"]:
-        ai_block += f"""### {n['title']}
-- **来源**: OpenAlex
-- **论文**: [{n['title']}]({n['url']})
-- **发表**: {n['published']}
-- **摘要**: {n['abstract']}
+    # ── GitHub Trending ──
+    lines.append("## 🔥 GitHub Trending")
+    lines.append("")
+    if context["github_trending"]:
+        for r in context["github_trending"]:
+            lines.append(f"### {r['rank']}. {r['name']}")
+            if r["description"] and r["description"] != "暂无描述":
+                lines.append(f">{r['description']}")
+            lines.append(f"- **语言**: {r['language']} | **⭐**: {r['stars']} | **🔱**: {r['forks']}")
+            lines.append(f"- **链接**: [GitHub]({r['url']})")
+            lines.append("")
+    else:
+        lines.append("*今日暂无热门项目*")
+        lines.append("")
+    lines.append("---")
+    lines.append("")
 
-"""
-    tpl = tpl.replace("{{#each ai_news}}{{title}}:::{{/each}}", ai_block.rstrip())
+    # ── StackOverflow ──
+    lines.append("## 💬 StackOverflow 技术热点")
+    lines.append("")
+    if context["stackoverflow"]:
+        for q in context["stackoverflow"]:
+            lines.append(f"### {q['title']}")
+            tag_html = " ".join(f"`{t}`" for t in q["tags"])
+            lines.append(f"- **标签**: {tag_html}")
+            lines.append(f"- **投票**: {q['votes']} | **回答**: {q['answers']} | **浏览**: {q['views']}")
+            lines.append(f"- **链接**: [查看问题]({q['link']})")
+            lines.append("")
+    else:
+        lines.append("*今日暂无热点问题*")
+        lines.append("")
 
-    # 替换整个 ai_news 块
-    import re
-    tpl = re.sub(r"\{\{#each ai_news\}\}.*?\{\{/each\}\}", "", tpl, flags=re.DOTALL)
+    lines.append("---")
+    lines.append("")
+    lines.append("> 📬 订阅此仓库: Watch → Releases only | 如需定制化需求 Open Issue")
 
-    # GitHub Trending
-    gh_block = ""
-    for r in context["github_trending"]:
-        gh_block += f"""### {r['rank']}. {r['name']}
-{f"> {r['description']}" if r['description'] != '暂无描述' else ''}
-
-- **语言**: {r['language']} | **⭐**: {r['stars']} | **🔱**: {r['forks']}
-- **今日新增**: +{r['today_stars']} ⭐
-- **链接**: [GitHub]({r['url']})
-
----
-"""
-    tpl = tpl.replace("{{#each github_trending}}:::{{/each}}", gh_block.rstrip())
-    tpl = re.sub(r"\{\{#each github_trending\}\}.*?\{\{/each\}\}", "", tpl, flags=re.DOTALL)
-
-    # StackOverflow
-    so_block = ""
-    for q in context["stackoverflow"]:
-        tag_html = " ".join(f"`{t}`" for t in q["tags"])
-        so_block += f"""### {q['title']}
-- **标签**: {tag_html}
-- **投票**: {q['votes']} | **回答**: {q['answers']} | **浏览**: {q['views']}
-- **链接**: [查看问题]({q['link']})
-
-"""
-    tpl = tpl.replace("{{#each stackoverflow}}:::{{/each}}", so_block.rstrip())
-    tpl = re.sub(r"\{\{#each stackoverflow\}\}.*?\{\{/each\}\}", "", tpl, flags=re.DOTALL)
-
-    return tpl
+    return "\n".join(lines)
 
 
 # ─── 主流程 ───────────────────────────────────────────────
@@ -240,7 +254,7 @@ def main():
     }
 
     print("  📝 渲染 Markdown...")
-    md_content = render_template(TEMPLATE_PATH, context)
+    md_content = render_template(context)
 
     out_file = OUTPUT_DIR / f"{slug_date()}.md"
     with open(out_file, "w", encoding="utf-8") as f:
