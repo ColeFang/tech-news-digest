@@ -149,10 +149,17 @@ def fetch_openalex_news(dt=None, limit=5):
     通过 OpenAlex API 搜索 AI/ML 高影响力论文
     dt: datetime 对象，用于过滤近N天的论文
     """
+    # 计算日期范围：从 dt 前7天到 dt 当天
+    if dt is None:
+        dt = datetime.now()
+    start_dt = dt - timedelta(days=7)
+    date_from = start_dt.strftime("%Y-%m-%d")
+    date_to = dt.strftime("%Y-%m-%d")
+
     url = (
         "https://api.openalex.org/works"
         "?search=artificial intelligence,machine learning,large language model"
-        "&filter=publication_year:2025|2026"
+        f"&filter=publication_year:2025|2026,publication_date:{date_from}|{date_to}"
         "&sort=relevance_score:desc"
         f"&per_page={limit}"
     )
