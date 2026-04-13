@@ -69,7 +69,6 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
         return items
 
     BATCH_SIZE = 1
-    MAX_WORKERS = 5  # 并行 worker 数，控制并发量
 
     def _call_minimax(sub_items, id_offset=0):
         """为子列表构建 prompt 并调用 API（单次请求）"""
@@ -131,6 +130,8 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
             headers={"Authorization": f"Bearer {MINIMAX_API_KEY}", "Content-Type": "application/json"},
             json=payload, timeout=60,
         )
+        if resp.status_code == 429:
+            raise Exception("rate_limit")  # 让外层重试
         resp.raise_for_status()
         data = resp.json()
         finish_reason = data["choices"][0].get("finish_reason", "")
@@ -144,6 +145,8 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
                 headers={"Authorization": f"Bearer {MINIMAX_API_KEY}", "Content-Type": "application/json"},
                 json=payload, timeout=60,
             )
+            if resp2.status_code == 429:
+                raise Exception("rate_limit")
             resp2.raise_for_status()
             raw = resp2.json()["choices"][0]["message"].get("content", "").strip()
 
@@ -164,23 +167,24 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
                 continue
         return parsed_map
 
-    # 构建所有批次任务，并行执行
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    batches = []
-    for start in range(0, len(items), BATCH_SIZE):
-        sub = items[start:start + BATCH_SIZE]
-        batches.append((sub, start))
+    # 串行执行 + 指数退避重试（避免 429）
+    import time
 
     parsed_map = {}
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(_call_minimax, sub, start): start for sub, start in batches}
-        for future in as_completed(futures):
+    for start in range(0, len(items), BATCH_SIZE):
+        sub = items[start:start + BATCH_SIZE]
+        for attempt in range(3):
             try:
-                result = future.result()
+                result = _call_minimax(sub, id_offset=start)
                 parsed_map.update(result)
+                break
             except Exception as e:
-                pass  # 单个失败不影响其他批次
+                if attempt < 2:
+                    time.sleep(2 ** attempt)  # 指数退避: 1s, 2s
+                else:
+                    pass  # 3次全失败则留空，由回填逻辑处理
+        # 每批之间短暂停顿，避免触发速率限制
+        time.sleep(0.5)
 
     # 回填结果
     for i, item in enumerate(items):
