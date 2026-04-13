@@ -63,15 +63,16 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
     """
     批量为多项内容生成双语翻译 + 深度分析（调用 MiniMax）
     category: "ai_news" | "github" | "stackoverflow"
-    每 2 项一批次，避免 max_tokens 截断
+    每 1 项一批次 + 并行执行，确保 max_tokens=800 不截断，总时间可控
     """
     if not MINIMAX_API_KEY or not items:
         return items
 
-    BATCH_SIZE = 1  # 每批处理 1 项，确保 max_tokens=800 不截断
+    BATCH_SIZE = 1
+    MAX_WORKERS = 5  # 并行 worker 数，控制并发量
 
     def _call_minimax(sub_items, id_offset=0):
-        """为子列表构建 prompt 并调用 API"""
+        """为子列表构建 prompt 并调用 API（单次请求）"""
         if not sub_items:
             return {}
 
@@ -86,7 +87,6 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
 
 请为每篇论文输出一行JSON（不要换行，用\\n分隔）：
 {{"id": 0, "title_zh": "中文标题", "abstract_zh": "中文摘要（80字以内）", "deep_analysis": "深度分析：1)核心创新点 2)局限性 3)行业影响（80字以内）", "application_scenarios": ["落地场景1", "落地场景2"]}}
-{{"id": 1, ...}}
 
 只输出JSON数组，不要其他内容。"""
         elif category == "github":
@@ -100,7 +100,6 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
 
 请为每个项目输出一行JSON（不要换行，用\\n分隔）：
 {{"id": 0, "title_zh": "中文名称", "description_zh": "中文描述（60字以内）", "deep_analysis": "深度分析：1)核心价值 2)潜在问题 3)开发者影响（80字以内）", "application_scenarios": ["使用场景1", "使用场景2"]}}
-{{"id": 1, ...}}
 
 只输出JSON数组，不要其他内容。"""
         else:  # stackoverflow
@@ -114,7 +113,6 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
 
 请为每个问题输出一行JSON（不要换行，用\\n分隔）：
 {{"id": 0, "title_zh": "中文标题", "deep_analysis": "深度分析：1)问题核心 2)技术难点 3)实际开发价值（80字以内）", "application_scenarios": ["适用场景1", "适用场景2"]}}
-{{"id": 1, ...}}
 
 只输出JSON数组，不要其他内容。"""
 
@@ -166,11 +164,23 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
                 continue
         return parsed_map
 
-    # 分批处理
-    parsed_map = {}
+    # 构建所有批次任务，并行执行
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    batches = []
     for start in range(0, len(items), BATCH_SIZE):
         sub = items[start:start + BATCH_SIZE]
-        parsed_map.update(_call_minimax(sub, id_offset=start))
+        batches.append((sub, start))
+
+    parsed_map = {}
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(_call_minimax, sub, start): start for sub, start in batches}
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                parsed_map.update(result)
+            except Exception as e:
+                pass  # 单个失败不影响其他批次
 
     # 回填结果
     for i, item in enumerate(items):
