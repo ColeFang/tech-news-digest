@@ -6,11 +6,12 @@
 支持日期参数用于回填历史日期
 """
 
-import requests
-import json
 import sys
 import os
-import requests, time, re, json
+import requests
+import time
+import re
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -121,7 +122,7 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
                 {"role": "system", "content": "You are a helpful assistant that outputs valid JSON arrays."},
                 {"role": "user", "content": user_prompt}
             ],
-            "max_tokens": 800,
+            "max_tokens": 1200,
             "temperature": 0.7,
         }
 
@@ -131,24 +132,10 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
             json=payload, timeout=60,
         )
         if resp.status_code == 429:
-            raise Exception("rate_limit")  # 让外层重试
+            raise Exception("rate_limit")
         resp.raise_for_status()
         data = resp.json()
-        finish_reason = data["choices"][0].get("finish_reason", "")
         raw = data["choices"][0]["message"].get("content", "").strip()
-
-        # 截断时重试 with 1200 tokens
-        if finish_reason == "length" or not raw:
-            payload["max_tokens"] = 1200
-            resp2 = requests.post(
-                f"{MINIMAX_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {MINIMAX_API_KEY}", "Content-Type": "application/json"},
-                json=payload, timeout=60,
-            )
-            if resp2.status_code == 429:
-                raise Exception("rate_limit")
-            resp2.raise_for_status()
-            raw = resp2.json()["choices"][0]["message"].get("content", "").strip()
 
         # 解析 JSONL
         raw = re.sub(r"^```(?:json)?\s*", "", raw).strip()
