@@ -68,7 +68,7 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
     if not MINIMAX_API_KEY or not items:
         return items
 
-    BATCH_SIZE = 2  # 每批处理 2 项，避免截断
+    BATCH_SIZE = 1  # 每批处理 1 项，确保 max_tokens=800 不截断
 
     def _call_minimax(sub_items, id_offset=0):
         """为子列表构建 prompt 并调用 API"""
