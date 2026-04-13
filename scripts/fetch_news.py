@@ -63,31 +63,38 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
     """
     批量为多项内容生成双语翻译 + 深度分析（调用 MiniMax）
     category: "ai_news" | "github" | "stackoverflow"
-    返回更新后的 items 列表，每项增加: title_zh, abstract_zh, deep_analysis, application_scenarios
+    每 2 项一批次，避免 max_tokens 截断
     """
     if not MINIMAX_API_KEY or not items:
         return items
 
-    if category == "ai_news":
-        items_text = "\n".join([
-            f"[{i}] Title: {n.get('title', '')[:200]} | Abstract: {n.get('abstract', 'N/A')[:200]}"
-            for i, n in enumerate(items)
-        ])
-        user_prompt = f"""以下是今日AI论文列表，每篇需要翻译成中文并提供深度分析：
+    BATCH_SIZE = 2  # 每批处理 2 项，避免截断
+
+    def _call_minimax(sub_items, id_offset=0):
+        """为子列表构建 prompt 并调用 API"""
+        if not sub_items:
+            return {}
+
+        if category == "ai_news":
+            items_text = "\n".join([
+                f"[{i}] Title: {n.get('title', '')[:200]} | Abstract: {n.get('abstract', 'N/A')[:200]}"
+                for i, n in enumerate(sub_items)
+            ])
+            user_prompt = f"""以下是今日AI论文列表，每篇需要翻译成中文并提供深度分析：
 
 {items_text}
 
 请为每篇论文输出一行JSON（不要换行，用\\n分隔）：
-{{"id": 0, "title_zh": "中文标题", "abstract_zh": "中文摘要（80字以内）", "deep_analysis": "深度分析：包含1)核心创新点 2)局限性/争议点 3)对行业的影响（100字以内）", "application_scenarios": ["落地场景1", "落地场景2"]}}
+{{"id": 0, "title_zh": "中文标题", "abstract_zh": "中文摘要（80字以内）", "deep_analysis": "深度分析：1)核心创新点 2)局限性 3)行业影响（80字以内）", "application_scenarios": ["落地场景1", "落地场景2"]}}
 {{"id": 1, ...}}
 
 只输出JSON数组，不要其他内容。"""
-    elif category == "github":
-        items_text = "\n".join([
-            f"[{i}] Name: {r.get('name', '')} | Desc: {r.get('description', 'N/A')[:100]} | Lang: {r.get('language', '-')} | Stars: {r.get('stars', '-')}"
-            for i, r in enumerate(items)
-        ])
-        user_prompt = f"""以下是今日GitHub热门项目列表，每项需要翻译成中文并提供深度分析：
+        elif category == "github":
+            items_text = "\n".join([
+                f"[{i}] Name: {r.get('name', '')} | Desc: {r.get('description', 'N/A')[:100]} | Lang: {r.get('language', '-')} | Stars: {r.get('stars', '-')}"
+                for i, r in enumerate(sub_items)
+            ])
+            user_prompt = f"""以下是今日GitHub热门项目列表，每项需要翻译成中文并提供深度分析：
 
 {items_text}
 
@@ -96,12 +103,12 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
 {{"id": 1, ...}}
 
 只输出JSON数组，不要其他内容。"""
-    else:  # stackoverflow
-        items_text = "\n".join([
-            f"[{i}] Title: {q.get('title', '')} | Tags: {','.join(q.get('tags', [])[:5])}"
-            for i, q in enumerate(items)
-        ])
-        user_prompt = f"""以下是今日StackOverflow热点问题列表，每项需要翻译成中文并提供深度分析：
+        else:  # stackoverflow
+            items_text = "\n".join([
+                f"[{i}] Title: {q.get('title', '')} | Tags: {','.join(q.get('tags', [])[:5])}"
+                for i, q in enumerate(sub_items)
+            ])
+            user_prompt = f"""以下是今日StackOverflow热点问题列表，每项需要翻译成中文并提供深度分析：
 
 {items_text}
 
@@ -111,36 +118,42 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
 
 只输出JSON数组，不要其他内容。"""
 
-    payload = {
-        "model": MINIMAX_MODEL,
-        "messages": [
-            {"role": "system", "content": "You are a helpful assistant that outputs valid JSON arrays."},
-            {"role": "user", "content": user_prompt}
-        ],
-        "max_tokens": 800,
-        "temperature": 0.7,
-    }
+        payload = {
+            "model": MINIMAX_MODEL,
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant that outputs valid JSON arrays."},
+                {"role": "user", "content": user_prompt}
+            ],
+            "max_tokens": 800,
+            "temperature": 0.7,
+        }
 
-    try:
         resp = requests.post(
             f"{MINIMAX_BASE_URL}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {MINIMAX_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json=payload,
-            timeout=60,
+            headers={"Authorization": f"Bearer {MINIMAX_API_KEY}", "Content-Type": "application/json"},
+            json=payload, timeout=60,
         )
         resp.raise_for_status()
         data = resp.json()
+        finish_reason = data["choices"][0].get("finish_reason", "")
         raw = data["choices"][0]["message"].get("content", "").strip()
-        # 清理 markdown 代码块
+
+        # 截断时重试 with 1200 tokens
+        if finish_reason == "length" or not raw:
+            payload["max_tokens"] = 1200
+            resp2 = requests.post(
+                f"{MINIMAX_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {MINIMAX_API_KEY}", "Content-Type": "application/json"},
+                json=payload, timeout=60,
+            )
+            resp2.raise_for_status()
+            raw = resp2.json()["choices"][0]["message"].get("content", "").strip()
+
+        # 解析 JSONL
         raw = re.sub(r"^```(?:json)?\s*", "", raw).strip()
         raw = re.sub(r"\s*```$", "", raw).strip()
-        # 解析 JSONL 格式（每行一个JSON）
-        lines = raw.split("\n")
         parsed_map = {}
-        for line in lines:
+        for line in raw.split("\n"):
             line = line.strip()
             if not line.startswith("{"):
                 continue
@@ -148,28 +161,30 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
                 obj = json.loads(line)
                 idx = obj.get("id")
                 if idx is not None:
-                    parsed_map[idx] = obj
+                    parsed_map[idx + id_offset] = obj
             except:
                 continue
-        # 回填到 items
-        for i, item in enumerate(items):
-            if i in parsed_map:
-                p = parsed_map[i]
-                item["title_zh"] = p.get("title_zh", p.get("description_zh", ""))
-                item["abstract_zh"] = p.get("abstract_zh", p.get("description_zh", ""))
-                item["deep_analysis"] = p.get("deep_analysis", "")
-                item["application_scenarios"] = p.get("application_scenarios", [])
-            else:
-                item["title_zh"] = ""
-                item["abstract_zh"] = ""
-                item["deep_analysis"] = "（深度分析生成失败）"
-                item["application_scenarios"] = []
-    except Exception as e:
-        for item in items:
-            item["title_zh"] = ""
-            item["abstract_zh"] = ""
-            item["deep_analysis"] = f"（分析失败: {e}）"
-            item["application_scenarios"] = []
+        return parsed_map
+
+    # 分批处理
+    parsed_map = {}
+    for start in range(0, len(items), BATCH_SIZE):
+        sub = items[start:start + BATCH_SIZE]
+        parsed_map.update(_call_minimax(sub, id_offset=start))
+
+    # 回填结果
+    for i, item in enumerate(items):
+        if i in parsed_map:
+            p = parsed_map[i]
+            item["title_zh"] = p.get("title_zh", p.get("description_zh", ""))
+            item["abstract_zh"] = p.get("abstract_zh", p.get("description_zh", ""))
+            item["deep_analysis"] = p.get("deep_analysis", "")
+            item["application_scenarios"] = p.get("application_scenarios", [])
+        else:
+            item["title_zh"] = item.get("title_zh", "")
+            item["abstract_zh"] = item.get("abstract_zh", "")
+            item["deep_analysis"] = item.get("deep_analysis", "（深度分析生成失败）")
+            item["application_scenarios"] = item.get("application_scenarios", [])
 
     return items
 
