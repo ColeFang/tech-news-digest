@@ -19,8 +19,8 @@ MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7-highspeed")
 def build_summary_prompt(ai_news: List[dict], github_trending: List[dict], stackoverflow: List[dict]) -> str:
     """构建摘要 prompt，将所有内容浓缩为参考上下文"""
 
-    # 提取 AI 论文标题
-    ai_titles = "；".join(n.get("title", "") for n in ai_news[:5]) or "无"
+    # 提取 AI 论文标题（截断到 60 字符避免 prompt 过长）
+    ai_titles = "；".join(n.get("title", "")[:60] for n in ai_news[:5]) or "无"
 
     # 提取 GitHub 项目名 + 描述
     gh_items = []
@@ -30,8 +30,8 @@ def build_summary_prompt(ai_news: List[dict], github_trending: List[dict], stack
         gh_items.append(f"{name}: {desc}")
     gh_text = "；".join(gh_items) or "无"
 
-    # 提取 SO 问题标题
-    so_titles = "；".join(q.get("title", "") for q in stackoverflow[:5]) or "无"
+    # 提取 SO 问题标题（截断到 60 字符）
+    so_titles = "；".join(q.get("title", "")[:60] for q in stackoverflow[:5]) or "无"
 
     prompt = f"今日内容：\n\n【AI论文】{ai_titles}\n【GitHub】{gh_text}\n【SO】{so_titles}"
     return prompt
@@ -72,7 +72,19 @@ def gen_daily_summary(ai_news: List[dict], github_trending: List[dict], stackove
         )
         resp.raise_for_status()
         data = resp.json()
+        finish_reason = data["choices"][0].get("finish_reason", "")
         raw = data["choices"][0]["message"].get("content", "").strip()
+        # finish_reason=length 表示被截断，重试 with 1200 tokens
+        if finish_reason == "length" or not raw:
+            payload["max_tokens"] = 1200
+            resp2 = requests.post(
+                f"{MINIMAX_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {MINIMAX_API_KEY}", "Content-Type": "application/json"},
+                json=payload, timeout=30,
+            )
+            resp2.raise_for_status()
+            data2 = resp2.json()
+            raw = data2["choices"][0]["message"].get("content", "").strip()
         # 尝试 JSON 解析
         try:
             raw = re.sub(r"^```(?:json)?\s*", "", raw).strip()

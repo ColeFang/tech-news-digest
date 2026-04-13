@@ -117,7 +117,7 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
             {"role": "system", "content": "You are a helpful assistant that outputs valid JSON arrays."},
             {"role": "user", "content": user_prompt}
         ],
-        "max_tokens": 1200,
+        "max_tokens": 800,
         "temperature": 0.7,
     }
 
