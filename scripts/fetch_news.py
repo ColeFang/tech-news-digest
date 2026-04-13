@@ -399,12 +399,17 @@ def render_template(context):
     if context["stackoverflow"]:
         for q in context["stackoverflow"]:
             lines.append(f"### {q['title']}")
+            if q.get("title_zh"):
+                lines.append(f"*《{q['title_zh']}》*")
             tag_html = " ".join(f"`{t}`" for t in q["tags"])
             lines.append(f"- **标签**: {tag_html}")
             lines.append(f"- **投票**: {q['votes']} | **回答**: {q['answers']} | **浏览**: {q['views']}")
             lines.append(f"- **链接**: [查看问题]({q['link']})")
-            if q.get("judgment"):
-                lines.append(f"- **💡 判断**: {q['judgment']}")
+            if q.get("deep_analysis"):
+                lines.append(f"- **🔍 深度分析**: {q['deep_analysis']}")
+            if q.get("application_scenarios"):
+                scenes = " · ".join(q["application_scenarios"])
+                lines.append(f"- **🎯 适用场景**: {scenes}")
             lines.append("")
     else:
         lines.append("*今日暂无热点问题*")
