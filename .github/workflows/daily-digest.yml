@@ -16,9 +16,16 @@ on:
         default: 'true'
 
 env:
+  # 统一 LLM 配置（OpenAI 兼容协议，支持 MiniMax / OpenAI / DeepSeek 等）
+  LLM_API_KEY: ${{ secrets.LLM_API_KEY || secrets.MINIMAX_API_KEY || secrets.OPENAI_API_KEY }}
+  LLM_BASE_URL: ${{ vars.LLM_BASE_URL || vars.MINIMAX_BASE_URL || vars.OPENAI_BASE_URL }}
+  LLM_MODEL: ${{ vars.LLM_MODEL }}
+  # 向后兼容（旧变量名仍可用）
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
-  LLM_MODEL: ${{ vars.LLM_MODEL }}
+  MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+  MINIMAX_BASE_URL: ${{ vars.MINIMAX_BASE_URL }}
+  # 分发渠道
   TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
   TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
   SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -27,6 +34,7 @@ env:
   SMTP_PASS: ${{ secrets.SMTP_PASS }}
   EMAIL_TO: ${{ secrets.EMAIL_TO }}
   WEIXIN_ILINK_HOOK: ${{ secrets.WEIXIN_ILINK_HOOK }}
+  LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
 
 jobs:
   digest:

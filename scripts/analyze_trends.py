@@ -17,9 +17,21 @@ from pathlib import Path
 
 # ─── 配置 ────────────────────────────────────────────────
 DAILY_DIR = Path(__file__).parent.parent / "daily"
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://minimax.a7m.com.cn/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "MiniMax-M2.7-highspeed")
+LLM_API_KEY = (
+    os.getenv("LLM_API_KEY")
+    or os.getenv("MINIMAX_API_KEY")
+    or os.getenv("OPENAI_API_KEY", "")
+)
+LLM_BASE_URL = (
+    os.getenv("LLM_BASE_URL")
+    or os.getenv("MINIMAX_BASE_URL")
+    or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+)
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+
+# 向后兼容
+OPENAI_API_KEY = LLM_API_KEY
+OPENAI_BASE_URL = LLM_BASE_URL
 
 # ─── 解析每日文件 ─────────────────────────────────────────
 
@@ -145,11 +157,12 @@ def count_topic_frequency(days_data: list[dict], topic: str) -> list[int]:
 # ─── LLM 趋势解读 ─────────────────────────────────────────
 
 def gen_trend_commentary(trends: dict, days_data: list[dict]) -> str:
-    """用 LLM 为趋势数据生成中文解读"""
-    if not OPENAI_API_KEY:
+    """用 LLM 为趋势数据生成中文解读（OpenAI 兼容协议）"""
+    if not LLM_API_KEY:
         return ""
 
-    # 构建上下文摘要
+    from scripts.llm_utils import extract_response
+
     ai_counts = [len(d["ai_titles"]) for d in days_data]
     gh_counts = [len(d["gh_repos"]) for d in days_data]
     dates = [d["date"] for d in days_data]
@@ -169,20 +182,18 @@ GitHub 热门每日数量：{gh_counts}
     payload = {
         "model": LLM_MODEL,
         "messages": [
-            {"role": "system", "content": "Output only a JSON object, nothing else. Example: {\"commentary\": \"some text\"}"},
+            {"role": "system", "content": "Output only a JSON object, nothing else. No markdown fences. Example: {\"commentary\": \"some text\"}"},
             {"role": "user", "content": f"{prompt}\nRespond ONLY with: {{\"commentary\": \"...\"}}"}
         ],
         "max_tokens": 800,
         "temperature": 0.7,
     }
-    if "openrouter" in OPENAI_BASE_URL or "groq" in OPENAI_BASE_URL:
-        payload["model"] = LLM_MODEL
 
     try:
         resp = requests.post(
-            f"{OPENAI_BASE_URL}/chat/completions",
+            f"{LLM_BASE_URL}/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Authorization": f"Bearer {LLM_API_KEY}",
                 "Content-Type": "application/json",
             },
             json=payload,
@@ -190,7 +201,7 @@ GitHub 热门每日数量：{gh_counts}
         )
         resp.raise_for_status()
         data = resp.json()
-        raw = data["choices"][0]["message"].get("content", "").strip()
+        raw = extract_response(data["choices"][0]["message"])
         try:
             raw = re.sub(r"^```(?:json)?\s*", "", raw).strip()
             raw = re.sub(r"\s*```$", "", raw).strip()

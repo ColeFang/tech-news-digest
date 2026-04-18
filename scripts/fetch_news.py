@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-技术快讯采集脚本 v2
+技术快讯采集脚本 v3
 每天自动采集: OpenAlex AI论文 · GitHub 高星活跃项目 · StackOverflow 热点
 每篇加入个人判断思考 · 非专业名词中文表达
 支持日期参数用于回填历史日期
+
+LLM 配置统一使用 OpenAI 兼容协议：
+  LLM_API_KEY   — API 密钥（回退: MINIMAX_API_KEY → OPENAI_API_KEY）
+  LLM_BASE_URL  — API 端点（回退: MINIMAX_BASE_URL → OPENAI_BASE_URL）
+  LLM_MODEL     — 模型名称
 """
 
 import sys
@@ -20,15 +25,28 @@ from scripts.llm_utils import extract_response
 from scripts.summarize import gen_daily_summary, format_summary_markdown
 from scripts.rank import rank_content
 
-# ─── 配置 ───────────────────────────────────────────────
+# ─── 统一 LLM 配置（OpenAI 兼容协议） ────────────────────────
+# 优先级: LLM_API_KEY > MINIMAX_API_KEY > OPENAI_API_KEY
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+LLM_API_KEY = (
+    os.getenv("LLM_API_KEY")
+    or os.getenv("MINIMAX_API_KEY")
+    or os.getenv("OPENAI_API_KEY", "")
+)
+LLM_BASE_URL = (
+    os.getenv("LLM_BASE_URL")
+    or os.getenv("MINIMAX_BASE_URL")
+    or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+)
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
-# MiniMax API 配置（双语翻译 + 深度分析专用）
-MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
-MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://minimax.a7m.com.cn/v1")
-MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7-highspeed")
+
+# 向后兼容: 老代码中引用的变量名
+OPENAI_API_KEY = LLM_API_KEY
+OPENAI_BASE_URL = LLM_BASE_URL
+MINIMAX_API_KEY = LLM_API_KEY
+MINIMAX_BASE_URL = LLM_BASE_URL
+MINIMAX_MODEL = LLM_MODEL
+
 OUTPUT_DIR = Path(__file__).parent.parent / "daily"
 
 
@@ -62,11 +80,11 @@ def slug_date(dt=None):
 # ─── LLM 个人判断 ────────────────────────────────────────
 def gen_deep_analysis_batch(items: list, category: str) -> list:
     """
-    批量为多项内容生成双语翻译 + 深度分析（调用 MiniMax）
+    批量为多项内容生成双语翻译 + 深度分析（调用 OpenAI 兼容 LLM API）
     category: "ai_news" | "github" | "stackoverflow"
-    每 1 项一批次 + 并行执行，确保 max_tokens=800 不截断，总时间可控
+    每 1 项一批次，确保 max_tokens 不截断，总时间可控
     """
-    if not MINIMAX_API_KEY or not items:
+    if not LLM_API_KEY or not items:
         return items
 
     BATCH_SIZE = 1
@@ -117,9 +135,9 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
 只输出JSON数组，不要其他内容。"""
 
         payload = {
-            "model": MINIMAX_MODEL,
+            "model": LLM_MODEL,
             "messages": [
-                {"role": "system", "content": "You are a helpful assistant that outputs valid JSON arrays."},
+                {"role": "system", "content": "You are a helpful assistant that outputs valid JSON arrays. Output ONLY the JSON, no markdown fences, no explanation."},
                 {"role": "user", "content": user_prompt}
             ],
             "max_tokens": 1200,
@@ -127,17 +145,17 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
         }
 
         resp = requests.post(
-            f"{MINIMAX_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {MINIMAX_API_KEY}", "Content-Type": "application/json"},
+            f"{LLM_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
             json=payload, timeout=60,
         )
         if resp.status_code == 429:
             raise Exception("rate_limit")
         resp.raise_for_status()
         data = resp.json()
-        raw = data["choices"][0]["message"].get("content", "").strip()
+        msg = data["choices"][0]["message"]
+        raw = extract_response(msg)
 
-        # 解析响应：优先尝试 JSON 数组格式 [{}]，回退到 JSONL 格式 {}\n{}
         raw = re.sub(r"^```(?:json)?\s*", "", raw).strip()
         raw = re.sub(r"\s*```$", "", raw).strip()
         parsed_map = {}
@@ -193,15 +211,9 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
     for i, item in enumerate(items):
         if i in parsed_map:
             p = parsed_map[i]
-            item["title_zh"] = p.get("title_zh", p.get("description_zh", ""))
-            item["abstract_zh"] = p.get("abstract_zh", p.get("description_zh", ""))
-            # 去除 MiniMax 返回值中可能携带的 "深度分析：" 前缀，避免与模板前缀重复
-            da = p.get("deep_analysis", "")
-            for prefix in ("深度分析：", "深度分析:", "深度分析 "):
-                if da.startswith(prefix):
-                    da = da[len(prefix):]
-                    break
-            item["deep_analysis"] = da
+            item["title_zh"] = _clean_field(p.get("title_zh", p.get("description_zh", "")))
+            item["abstract_zh"] = _clean_field(p.get("abstract_zh", p.get("description_zh", "")))
+            item["deep_analysis"] = _clean_deep_analysis(p.get("deep_analysis", ""))
             item["application_scenarios"] = p.get("application_scenarios", [])
         else:
             item["title_zh"] = item.get("title_zh", "")
@@ -212,10 +224,31 @@ def gen_deep_analysis_batch(items: list, category: str) -> list:
     return items
 
 
+def _clean_field(text: str) -> str:
+    """清理 LLM 返回的字段，去除意外嵌入的 Markdown 标记"""
+    if not text:
+        return ""
+    text = re.sub(r"^[\-\*]\s*\*\*[^*]+\*\*:\s*", "", text).strip()
+    text = re.sub(r"^[\-\*]\s*\*\*🔍\s*深度分析\*\*:\s*", "", text).strip()
+    return text
+
+
+def _clean_deep_analysis(text: str) -> str:
+    """清理深度分析字段，去除重复前缀和嵌入的 Markdown 标记"""
+    if not text:
+        return ""
+    for prefix in ("深度分析：", "深度分析:", "深度分析 ",
+                   "- **🔍 深度分析**: ", "- **摘要（中文）**: "):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    text = re.sub(r"^[\-\*]\s*\*\*[^*]+\*\*:\s*", "", text).strip()
+    return text
+
+
 
 def gen_all_deep_analysis(ai_news, github_trending, stackoverflow, use_llm=True):
-    """为所有内容生成双语翻译 + 深度分析（调用 MiniMax 批量 API）"""
-    if not use_llm or not MINIMAX_API_KEY:
+    """为所有内容生成双语翻译 + 深度分析（调用 OpenAI 兼容 LLM API）"""
+    if not use_llm or not LLM_API_KEY:
         return ai_news, github_trending, stackoverflow
 
     print("  🧠 正在生成 AI 论文双语翻译 + 深度分析...")
@@ -359,6 +392,20 @@ def fetch_stackoverflow(tags=None, limit=5):
         })
     return questions
 
+def _sanitize_md_field(text: str) -> str:
+    """清理 LLM 字段值中意外嵌入的 Markdown 标记，防止渲染混乱"""
+    if not text:
+        return ""
+    text = re.sub(r"^-\s*\*\*🔍\s*深度分析\*\*:\s*", "", text).strip()
+    text = re.sub(r"^-\s*\*\*摘要（中文）\*\*:\s*", "", text).strip()
+    text = re.sub(r"^-\s*\*\*[^*]{1,20}\*\*:\s*", "", text).strip()
+    for prefix in ("深度分析：", "深度分析:", "深度分析 "):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    return text
+
+
 # ─── 渲染 Markdown ───────────────────────────────────────
 def render_template(context):
     lines = []
@@ -380,21 +427,18 @@ def render_template(context):
     lines.append("")
     if context["ai_news"]:
         for n in context["ai_news"]:
-            # 标题：中英双语
             lines.append(f"### {n.get('title', 'N/A')}")
             if n.get("title_zh"):
                 lines.append(f"*《{n['title_zh']}》*")
             lines.append(f"- **来源**: OpenAlex")
             lines.append(f"- **论文**: [{n['title']}]({n['url']})")
             lines.append(f"- **发表**: {n.get('published', '-')}")
-            # 摘要：中英双语
             abs_en = n.get("abstract", "无摘要")
             lines.append(f"- **摘要**: {abs_en}")
             if n.get("abstract_zh"):
-                lines.append(f"- **摘要（中文）**: {n['abstract_zh']}")
-            # 深度分析
+                lines.append(f"- **摘要（中文）**: {_sanitize_md_field(n['abstract_zh'])}")
             if n.get("deep_analysis"):
-                lines.append(f"- **🔍 深度分析**: {n['deep_analysis']}")
+                lines.append(f"- **🔍 深度分析**: {_sanitize_md_field(n['deep_analysis'])}")
             if n.get("application_scenarios"):
                 scenes = " · ".join(n["application_scenarios"])
                 lines.append(f"- **🎯 落地场景**: {scenes}")
@@ -416,11 +460,11 @@ def render_template(context):
             if r.get("description") and r["description"] != "暂无描述":
                 lines.append(f">{r['description']}")
             if r.get("abstract_zh"):
-                lines.append(f"- **描述（中文）**: {r['abstract_zh']}")
+                lines.append(f"- **描述（中文）**: {_sanitize_md_field(r['abstract_zh'])}")
             lines.append(f"- **语言**: {r['language']} | **⭐**: {r['stars']} | **🔱**: {r['forks']}")
             lines.append(f"- **链接**: [GitHub]({r['url']})")
             if r.get("deep_analysis"):
-                lines.append(f"- **🔍 深度分析**: {r['deep_analysis']}")
+                lines.append(f"- **🔍 深度分析**: {_sanitize_md_field(r['deep_analysis'])}")
             if r.get("application_scenarios"):
                 scenes = " · ".join(r["application_scenarios"])
                 lines.append(f"- **🎯 落地场景**: {scenes}")
@@ -444,7 +488,7 @@ def render_template(context):
             lines.append(f"- **投票**: {q['votes']} | **回答**: {q['answers']} | **浏览**: {q['views']}")
             lines.append(f"- **链接**: [查看问题]({q['link']})")
             if q.get("deep_analysis"):
-                lines.append(f"- **🔍 深度分析**: {q['deep_analysis']}")
+                lines.append(f"- **🔍 深度分析**: {_sanitize_md_field(q['deep_analysis'])}")
             if q.get("application_scenarios"):
                 scenes = " · ".join(q["application_scenarios"])
                 lines.append(f"- **🎯 适用场景**: {scenes}")
@@ -492,8 +536,8 @@ def main(date_str=None, use_llm=True, use_ranking=True, deliver_channels=None):
 
     # LLM 判断
     has_judgments = False
-    if use_llm and MINIMAX_API_KEY:
-        print("  🧠 正在生成双语翻译 + 深度分析（MiniMax）...")
+    if use_llm and LLM_API_KEY:
+        print(f"  🧠 正在生成双语翻译 + 深度分析（{LLM_MODEL}）...")
         ai_news, github_trending, stackoverflow = gen_all_deep_analysis(
             ai_news, github_trending, stackoverflow, use_llm=True
         )
@@ -501,18 +545,18 @@ def main(date_str=None, use_llm=True, use_ranking=True, deliver_channels=None):
     else:
         if not use_llm:
             print("  ⏭️ 跳过 LLM 判断（use_llm=False）")
-        elif not MINIMAX_API_KEY:
-            print("  ⏭️ 跳过 LLM 判断（未配置 MINIMAX_API_KEY）")
+        elif not LLM_API_KEY:
+            print("  ⏭️ 跳过 LLM 判断（未配置 LLM_API_KEY）")
 
-    # ── A1: 每日摘要（MiniMax 生成双语摘要）──────────────────
+    # ── A1: 每日摘要 ──────────────────────────────────────────
     daily_summary = ""
-    if use_llm and MINIMAX_API_KEY:
+    if use_llm and LLM_API_KEY:
         print("  📝 正在生成每日双语摘要...")
         raw_summary = gen_daily_summary(ai_news, github_trending, stackoverflow)
         daily_summary = format_summary_markdown(raw_summary)
         print(f"    摘要: {raw_summary[:50]}...")
     else:
-        print("  ⏭️ 跳过每日摘要（use_llm=False 或未配置 MINIMAX_API_KEY）")
+        print("  ⏭️ 跳过每日摘要（use_llm=False 或未配置 LLM_API_KEY）")
 
     context = {
         "date": date_label,

@@ -2,6 +2,7 @@
 """
 A1: 每日摘要生成器
 在每份快讯开头，由 LLM 生成一段今日技术形势综述（3-5 句话）
+兼容所有 OpenAI 兼容协议的 LLM API。
 """
 
 import os
@@ -10,10 +11,23 @@ import json
 import requests
 from typing import List, Dict
 
+# 统一 LLM 配置（OpenAI 兼容协议）
+LLM_API_KEY = (
+    os.getenv("LLM_API_KEY")
+    or os.getenv("MINIMAX_API_KEY")
+    or os.getenv("OPENAI_API_KEY", "")
+)
+LLM_BASE_URL = (
+    os.getenv("LLM_BASE_URL")
+    or os.getenv("MINIMAX_BASE_URL")
+    or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+)
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
-MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
-MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://minimax.a7m.com.cn/v1")
-MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7-highspeed")
+# 向后兼容
+MINIMAX_API_KEY = LLM_API_KEY
+MINIMAX_BASE_URL = LLM_BASE_URL
+MINIMAX_MODEL = LLM_MODEL
 
 
 def build_summary_prompt(ai_news: List[dict], github_trending: List[dict], stackoverflow: List[dict]) -> str:
@@ -38,18 +52,20 @@ def build_summary_prompt(ai_news: List[dict], github_trending: List[dict], stack
 
 
 def gen_daily_summary(ai_news: List[dict], github_trending: List[dict], stackoverflow: List[dict]) -> str:
-    """调用 LLM 生成每日摘要"""
-    if not MINIMAX_API_KEY:
-        return "（未配置 MINIMAX_API_KEY，跳过摘要）"
+    """调用 LLM 生成每日摘要（OpenAI 兼容协议）"""
+    if not LLM_API_KEY:
+        return "（未配置 LLM_API_KEY，跳过摘要）"
+
+    from scripts.llm_utils import extract_response
 
     prompt = build_summary_prompt(ai_news, github_trending, stackoverflow)
 
     payload = {
-        "model": MINIMAX_MODEL,
+        "model": LLM_MODEL,
         "messages": [
             {
                 "role": "system",
-                "content": "Output only a JSON object."
+                "content": "Output only a JSON object. No markdown fences, no explanation."
             },
             {
                 "role": "user",
@@ -62,9 +78,9 @@ def gen_daily_summary(ai_news: List[dict], github_trending: List[dict], stackove
 
     try:
         resp = requests.post(
-            f"{MINIMAX_BASE_URL}/chat/completions",
+            f"{LLM_BASE_URL}/chat/completions",
             headers={
-                "Authorization": f"Bearer {MINIMAX_API_KEY}",
+                "Authorization": f"Bearer {LLM_API_KEY}",
                 "Content-Type": "application/json",
             },
             json=payload,
@@ -73,19 +89,18 @@ def gen_daily_summary(ai_news: List[dict], github_trending: List[dict], stackove
         resp.raise_for_status()
         data = resp.json()
         finish_reason = data["choices"][0].get("finish_reason", "")
-        raw = data["choices"][0]["message"].get("content", "").strip()
-        # finish_reason=length 表示被截断，重试 with 1200 tokens
+        msg = data["choices"][0]["message"]
+        raw = extract_response(msg)
         if finish_reason == "length" or not raw:
             payload["max_tokens"] = 1200
             resp2 = requests.post(
-                f"{MINIMAX_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {MINIMAX_API_KEY}", "Content-Type": "application/json"},
+                f"{LLM_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
                 json=payload, timeout=30,
             )
             resp2.raise_for_status()
             data2 = resp2.json()
-            raw = data2["choices"][0]["message"].get("content", "").strip()
-        # 尝试 JSON 解析
+            raw = extract_response(data2["choices"][0]["message"])
         try:
             raw = re.sub(r"^```(?:json)?\s*", "", raw).strip()
             raw = re.sub(r"\s*```$", "", raw).strip()
@@ -95,12 +110,10 @@ def gen_daily_summary(ai_news: List[dict], github_trending: List[dict], stackove
                 return answer
         except (json.JSONDecodeError, ValueError, AttributeError):
             pass
-        # JSON 解析失败：检查是否被截断的 JSON
         if raw.startswith("{") and ':' in raw and raw.count('"') < 6:
             m = re.search(r'"\w+"\s*:\s*"([^"]*)"', raw)
             if m:
                 return m.group(1).strip()
-        # 直接返回原始 content
         return raw.strip('"').strip("'").strip()
     except Exception as e:
         return f"（摘要生成失败: {e}）"

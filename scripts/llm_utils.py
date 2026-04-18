@@ -1,11 +1,17 @@
 """
 统一 LLM 响应解析工具
-兼容所有 OpenAI / Anthropic 兼容协议模型：
-  - 标准模型（GPT-4o, GPT-4o-mini, Claude 等）：回复在 content
-  - 推理模型（MiniMax M2, DeepSeek R1 等）：思考在 reasoning_content，回复在 content
-  - 部分推理模型：actual response 在 reasoning_content 最后一段
+兼容所有 OpenAI / Anthropic 兼容协议的 chat/completions 端点。
+支持的模型包括但不限于：
+  - OpenAI: GPT-4o, GPT-4o-mini
+  - MiniMax: MiniMax-M2.7-highspeed 等
+  - DeepSeek: DeepSeek-R1 等推理模型
+  - Groq / OpenRouter / vLLM / Ollama 等兼容端点
+  - Anthropic Claude (通过 OpenAI 兼容代理)
 
-策略：content 优先 → looks_complete 启发式判断 → 不完整则从 reasoning_content 提取
+解析策略：
+  - 标准模型：回复在 content 字段
+  - 推理模型：思考过程在 reasoning_content，回复在 content
+  - content 优先 → looks_complete 启发式判断 → 不完整则从 reasoning_content 提取
 """
 
 import re
